@@ -30,7 +30,7 @@ export default function AdminDashboard() {
 
     try {
       const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-      if (!userDoc.exists() || userDoc.data().role !== 'admin') {
+      if (!userDoc.exists() || !userDoc.data().isAdmin) {
         router.push('/dashboard');
         return;
       }

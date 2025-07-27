@@ -40,7 +40,7 @@ export default function Layout({ children }) {
     }
   };
 
-  const menuItems = user?.role === 'admin' ? [
+  const menuItems = user?.isAdmin ? [
     { href: '/admin/dashboard', icon: 'dashboard', label: 'แดชบอร์ด' },
     { href: '/admin/nurses', icon: 'users', label: 'จัดการพยาบาล' },
     { href: '/admin/schedules', icon: 'calendar', label: 'ตารางเวรทั้งหมด' },
@@ -108,7 +108,7 @@ export default function Layout({ children }) {
       <div className="main-container">
         <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
           <div className="sidebar-header">
-            <h2>{user?.role === 'admin' ? 'เมนูผู้ดูแล' : 'เมนูหลัก'}</h2>
+            <h2>{user?.isAdmin ? 'เมนูผู้ดูแล' : 'เมนูหลัก'}</h2>
           </div>
           <nav className="sidebar-nav">
             {menuItems.map((item) => (

@@ -38,7 +38,7 @@ export default function Login() {
       }
 
       const userData = userDoc.data();
-      if (userData.role === 'admin') {
+      if (userData.isAdmin) {
         router.push('/admin/dashboard');
       } else {
         router.push('/dashboard');
