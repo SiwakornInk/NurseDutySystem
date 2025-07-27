@@ -44,3 +44,24 @@ export const SHIFT_NAMES = {
   [SHIFT_TYPES.AFTERNOON]: 'บ่าย',
   [SHIFT_TYPES.NIGHT]: 'ดึก'
 };
+
+export const checkWardHasAdmin = async (ward, excludeUserId = null) => {
+  const q = query(
+    collection(db, 'users'),
+    where('currentWard', '==', ward),
+    where('isAdmin', '==', true)
+  );
+  const snapshot = await getDocs(q);
+  const admins = snapshot.docs.filter(doc => doc.id !== excludeUserId);
+  return admins.length > 0;
+};
+
+export const getWardAdmins = async (ward) => {
+  const q = query(
+    collection(db, 'users'),
+    where('currentWard', '==', ward),
+    where('isAdmin', '==', true)
+  );
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+};

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../components/Layout';
-import { auth, db, WARDS } from '../../lib/firebase';
+import { auth, db, WARDS, checkWardHasAdmin } from '../../lib/firebase';
 import { collection, getDocs, doc, getDoc, addDoc, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import Head from 'next/head';
@@ -9,9 +9,13 @@ import Head from 'next/head';
 export default function AdminNurses() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
   const [nurses, setNurses] = useState([]);
-  const [selectedWard, setSelectedWard] = useState('all');
+  const [selectedWard, setSelectedWard] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transferNurse, setTransferNurse] = useState(null);
+  const [newWard, setNewWard] = useState('');
   const [editingNurse, setEditingNurse] = useState(null);
   const [formData, setFormData] = useState({
     email: '',
@@ -20,7 +24,7 @@ export default function AdminNurses() {
     firstName: '',
     lastName: '',
     phone: '',
-    currentWard: '',
+    isAdmin: false,
     position: 'พยาบาล',
     isGovernmentOfficial: false
   });
@@ -38,36 +42,105 @@ export default function AdminNurses() {
 
     try {
       const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-      if (!userDoc.exists() || userDoc.data().role !== 'admin') {
+      if (!userDoc.exists() || !userDoc.data().isAdmin) {
         router.push('/dashboard');
         return;
       }
-      fetchNurses();
+      
+      const userData = userDoc.data();
+      setCurrentUser(userData);
+      setSelectedWard(userData.currentWard);
+      fetchNurses(userData.currentWard);
     } catch (error) {
       console.error('Error:', error);
       router.push('/login');
     }
   };
 
-  const fetchNurses = async () => {
+  const fetchNurses = async (ward) => {
     setLoading(true);
     try {
-      let nursesQuery = collection(db, 'users');
+      const nursesQuery = query(
+        collection(db, 'users'),
+        where('currentWard', '==', ward || selectedWard)
+      );
       const snapshot = await getDocs(nursesQuery);
       
-      let nursesList = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() }))
-        .filter(user => user.role === 'nurse');
-
-      if (selectedWard !== 'all') {
-        nursesList = nursesList.filter(nurse => nurse.currentWard === selectedWard);
-      }
+      const nursesList = snapshot.docs.map(doc => ({ 
+        id: doc.id, 
+        ...doc.data() 
+      }));
 
       setNurses(nursesList);
     } catch (error) {
       console.error('Error fetching nurses:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleTransfer = async () => {
+    if (!newWard) {
+      alert('กรุณาเลือกวอร์ดปลายทาง');
+      return;
+    }
+
+    // ตรวจสอบว่าถ้าย้าย admin ออก วอร์ดเดิมจะยังมี admin เหลือไหม
+    if (transferNurse.isAdmin) {
+      const hasOtherAdmin = await checkWardHasAdmin(transferNurse.currentWard, transferNurse.id);
+      if (!hasOtherAdmin) {
+        alert('ไม่สามารถย้ายได้ เนื่องจากวอร์ดนี้จะไม่มี Admin เหลือ\nกรุณาแต่งตั้ง Admin คนใหม่ก่อน');
+        return;
+      }
+    }
+
+    try {
+      const updateData = {
+        currentWard: newWard,
+        updatedAt: new Date()
+      };
+
+      // ถ้าย้ายไปวอร์ดอื่น ต้องเอาสิทธิ์ admin ออก
+      if (transferNurse.isAdmin && newWard !== transferNurse.currentWard) {
+        updateData.isAdmin = false;
+      }
+
+      // อัพเดทข้อมูลพยาบาล
+      await updateDoc(doc(db, 'users', transferNurse.id), updateData);
+
+      // เพิ่มประวัติการย้ายวอร์ด
+      const wardHistoryRef = collection(db, 'users', transferNurse.id, 'wardHistory');
+      await addDoc(wardHistoryRef, {
+        fromWard: transferNurse.currentWard,
+        toWard: newWard,
+        date: new Date().toISOString(),
+        transferredBy: auth.currentUser.uid,
+        wasAdmin: transferNurse.isAdmin
+      });
+
+      alert('ย้ายวอร์ดสำเร็จ');
+      setShowTransferModal(false);
+      setTransferNurse(null);
+      setNewWard('');
+      fetchNurses(selectedWard);
+    } catch (error) {
+      console.error('Error:', error);
+      alert('ไม่สามารถย้ายวอร์ดได้');
+    }
+  };
+
+  const handleToggleAdmin = async (nurse) => {
+    try {
+      await updateDoc(doc(db, 'users', nurse.id), {
+        isAdmin: !nurse.isAdmin,
+        updatedAt: new Date()
+      });
+      
+      alert(`${nurse.isAdmin ? 'ถอดถอน' : 'แต่งตั้ง'} Admin สำเร็จ`);
+      fetchNurses(selectedWard);
+    } catch (error) {
+      console.error('Error:', error);
+      alert('เกิดข้อผิดพลาด');
     }
   };
 
@@ -84,7 +157,6 @@ export default function AdminNurses() {
     
     if (!formData.firstName) newErrors.firstName = 'กรุณากรอกชื่อ';
     if (!formData.lastName) newErrors.lastName = 'กรุณากรอกนามสกุล';
-    if (!formData.currentWard) newErrors.currentWard = 'กรุณาเลือกวอร์ด';
     
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -100,7 +172,6 @@ export default function AdminNurses() {
           firstName: formData.firstName,
           lastName: formData.lastName,
           phone: formData.phone,
-          currentWard: formData.currentWard,
           position: formData.position,
           isGovernmentOfficial: formData.isGovernmentOfficial,
           updatedAt: new Date()
@@ -121,15 +192,16 @@ export default function AdminNurses() {
           firstName: formData.firstName,
           lastName: formData.lastName,
           phone: formData.phone,
-          currentWard: formData.currentWard,
+          currentWard: currentUser.currentWard,
           position: formData.position,
           isGovernmentOfficial: formData.isGovernmentOfficial,
-          role: 'nurse',
+          isAdmin: formData.isAdmin,
           createdAt: new Date(),
           startDate: new Date().toISOString(),
           wardHistory: [{
-            ward: formData.currentWard,
-            date: new Date().toISOString()
+            ward: currentUser.currentWard,
+            date: new Date().toISOString(),
+            isAdmin: formData.isAdmin
           }]
         });
         
@@ -138,7 +210,7 @@ export default function AdminNurses() {
       
       setShowModal(false);
       resetForm();
-      fetchNurses();
+      fetchNurses(selectedWard);
     } catch (error) {
       console.error('Error:', error);
       if (error.code === 'auth/email-already-in-use') {
@@ -158,20 +230,30 @@ export default function AdminNurses() {
       firstName: nurse.firstName,
       lastName: nurse.lastName,
       phone: nurse.phone || '',
-      currentWard: nurse.currentWard,
       position: nurse.position || 'พยาบาล',
-      isGovernmentOfficial: nurse.isGovernmentOfficial || false
+      isGovernmentOfficial: nurse.isGovernmentOfficial || false,
+      isAdmin: nurse.isAdmin || false
     });
     setShowModal(true);
   };
 
   const handleDelete = async (nurseId) => {
+    const nurse = nurses.find(n => n.id === nurseId);
+    
+    if (nurse.isAdmin) {
+      const hasOtherAdmin = await checkWardHasAdmin(nurse.currentWard, nurseId);
+      if (!hasOtherAdmin) {
+        alert('ไม่สามารถลบได้ เนื่องจากเป็น Admin คนเดียวของวอร์ด');
+        return;
+      }
+    }
+    
     if (!confirm('ยืนยันการลบพยาบาลคนนี้?')) return;
     
     try {
       await deleteDoc(doc(db, 'users', nurseId));
       alert('ลบข้อมูลสำเร็จ');
-      fetchNurses();
+      fetchNurses(selectedWard);
     } catch (error) {
       console.error('Error:', error);
       alert('ไม่สามารถลบข้อมูลได้');
@@ -186,9 +268,9 @@ export default function AdminNurses() {
       firstName: '',
       lastName: '',
       phone: '',
-      currentWard: '',
       position: 'พยาบาล',
-      isGovernmentOfficial: false
+      isGovernmentOfficial: false,
+      isAdmin: false
     });
     setEditingNurse(null);
     setErrors({});
@@ -212,7 +294,7 @@ export default function AdminNurses() {
 
       <div className="nurses-management">
         <div className="page-header">
-          <h1>จัดการข้อมูลพยาบาล</h1>
+          <h1>จัดการข้อมูลพยาบาล - {currentUser?.currentWard}</h1>
           <button className="btn btn-primary" onClick={() => setShowModal(true)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M8 7a4 4 0 100-8 4 4 0 000 8zM20 8v6M23 11h-6"/>
@@ -221,20 +303,10 @@ export default function AdminNurses() {
           </button>
         </div>
 
-        <div className="filters card">
-          <label>กรองตามวอร์ด:</label>
-          <select
-            className="form-select"
-            value={selectedWard}
-            onChange={(e) => setSelectedWard(e.target.value)}
-          >
-            <option value="all">ทั้งหมด ({nurses.length} คน)</option>
-            {WARDS.map(ward => (
-              <option key={ward} value={ward}>
-                {ward} ({nurses.filter(n => n.currentWard === ward).length} คน)
-              </option>
-            ))}
-          </select>
+        <div className="ward-info card">
+          <p>จำนวนพยาบาลทั้งหมด: <strong>{nurses.length} คน</strong></p>
+          <p>Admin: <strong>{nurses.filter(n => n.isAdmin).length} คน</strong></p>
+          <p>ข้าราชการ: <strong>{nurses.filter(n => n.isGovernmentOfficial).length} คน</strong></p>
         </div>
 
         <div className="nurses-grid">
@@ -251,10 +323,14 @@ export default function AdminNurses() {
                 <div className="nurse-info">
                   <h3>{nurse.prefix} {nurse.firstName} {nurse.lastName}</h3>
                   <p className="nurse-position">{nurse.position}</p>
-                  <p className="nurse-ward">{nurse.currentWard}</p>
-                  {nurse.isGovernmentOfficial && (
-                    <span className="badge badge-primary">ข้าราชการ</span>
-                  )}
+                  <div className="nurse-badges">
+                    {nurse.isAdmin && (
+                      <span className="badge badge-primary">Admin</span>
+                    )}
+                    {nurse.isGovernmentOfficial && (
+                      <span className="badge badge-secondary">ข้าราชการ</span>
+                    )}
+                  </div>
                 </div>
               </div>
               
@@ -277,12 +353,33 @@ export default function AdminNurses() {
               </div>
 
               <div className="nurse-actions">
+                {nurse.id !== auth.currentUser.uid && (
+                  <>
+                    <button 
+                      className={`btn ${nurse.isAdmin ? 'btn-warning' : 'btn-success'} btn-sm`}
+                      onClick={() => handleToggleAdmin(nurse)}
+                    >
+                      {nurse.isAdmin ? 'ถอดถอน Admin' : 'แต่งตั้ง Admin'}
+                    </button>
+                    <button 
+                      className="btn btn-primary btn-sm" 
+                      onClick={() => {
+                        setTransferNurse(nurse);
+                        setShowTransferModal(true);
+                      }}
+                    >
+                      ย้ายวอร์ด
+                    </button>
+                  </>
+                )}
                 <button className="btn btn-secondary btn-sm" onClick={() => handleEdit(nurse)}>
                   แก้ไข
                 </button>
-                <button className="btn btn-danger btn-sm" onClick={() => handleDelete(nurse.id)}>
-                  ลบ
-                </button>
+                {nurse.id !== auth.currentUser.uid && (
+                  <button className="btn btn-danger btn-sm" onClick={() => handleDelete(nurse.id)}>
+                    ลบ
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -295,6 +392,7 @@ export default function AdminNurses() {
         )}
       </div>
 
+      {/* Modal เพิ่ม/แก้ไขพยาบาล */}
       {showModal && (
         <div className="modal-overlay" onClick={() => { setShowModal(false); resetForm(); }}>
           <div className="modal-content modal-lg" onClick={(e) => e.stopPropagation()}>
@@ -384,21 +482,6 @@ export default function AdminNurses() {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">วอร์ด <span className="required">*</span></label>
-                  <select
-                    className={`form-select ${errors.currentWard ? 'error' : ''}`}
-                    value={formData.currentWard}
-                    onChange={(e) => setFormData({ ...formData, currentWard: e.target.value })}
-                  >
-                    <option value="">-- เลือกวอร์ด --</option>
-                    {WARDS.map(ward => (
-                      <option key={ward} value={ward}>{ward}</option>
-                    ))}
-                  </select>
-                  {errors.currentWard && <span className="error-text">{errors.currentWard}</span>}
-                </div>
-
-                <div className="form-group">
                   <label className="form-label">ตำแหน่ง</label>
                   <input
                     type="text"
@@ -409,7 +492,7 @@ export default function AdminNurses() {
                 </div>
               </div>
 
-              <div className="form-group" style={{ marginTop: '1rem' }}>
+              <div className="checkbox-group">
                 <label className="checkbox-label">
                   <input
                     type="checkbox"
@@ -418,6 +501,17 @@ export default function AdminNurses() {
                   />
                   <span>เป็นข้าราชการ (ทำงานเฉพาะเวรเช้า จันทร์-ศุกร์)</span>
                 </label>
+                
+                {!editingNurse && (
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={formData.isAdmin}
+                      onChange={(e) => setFormData({ ...formData, isAdmin: e.target.checked })}
+                    />
+                    <span>แต่งตั้งเป็น Admin ของวอร์ด</span>
+                  </label>
+                )}
               </div>
             </div>
 
@@ -426,6 +520,74 @@ export default function AdminNurses() {
                 {editingNurse ? 'บันทึกการแก้ไข' : 'เพิ่มพยาบาล'}
               </button>
               <button className="btn btn-secondary" onClick={() => { setShowModal(false); resetForm(); }}>
+                ยกเลิก
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal ย้ายวอร์ด */}
+      {showTransferModal && transferNurse && (
+        <div className="modal-overlay" onClick={() => setShowTransferModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>ย้ายวอร์ด</h2>
+              <button className="modal-close" onClick={() => setShowTransferModal(false)}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <div className="transfer-info">
+                <p><strong>พยาบาล:</strong> {transferNurse.prefix} {transferNurse.firstName} {transferNurse.lastName}</p>
+                <p><strong>วอร์ดปัจจุบัน:</strong> {transferNurse.currentWard}</p>
+                {transferNurse.isAdmin && (
+                  <div className="warning-box">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                      <line x1="12" y1="9" x2="12" y2="13"/>
+                      <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    <span>หากย้ายไปวอร์ดอื่น จะถูกถอดถอนสิทธิ์ Admin อัตโนมัติ</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">เลือกวอร์ดปลายทาง</label>
+                <select
+                  className="form-select"
+                  value={newWard}
+                  onChange={(e) => setNewWard(e.target.value)}
+                >
+                  <option value="">-- เลือกวอร์ด --</option>
+                  {WARDS.filter(w => w !== transferNurse.currentWard).map(ward => (
+                    <option key={ward} value={ward}>{ward}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button 
+                className="btn btn-primary" 
+                onClick={handleTransfer}
+                disabled={!newWard}
+              >
+                ยืนยันการย้าย
+              </button>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => {
+                  setShowTransferModal(false);
+                  setTransferNurse(null);
+                  setNewWard('');
+                }}
+              >
                 ยกเลิก
               </button>
             </div>
@@ -458,22 +620,21 @@ export default function AdminNurses() {
           color: var(--gray-800);
         }
 
-        .filters {
+        .ward-info {
           display: flex;
-          align-items: center;
-          gap: 1rem;
-          padding: 1.5rem;
+          gap: 2rem;
+          padding: 1rem 1.5rem;
           margin-bottom: 2rem;
+          background: var(--gray-50);
         }
 
-        .filters label {
-          font-weight: 500;
-          color: var(--gray-700);
+        .ward-info p {
+          margin: 0;
+          color: var(--gray-600);
         }
 
-        .filters .form-select {
-          width: auto;
-          min-width: 200px;
+        .ward-info strong {
+          color: var(--gray-800);
         }
 
         .nurses-grid {
@@ -531,13 +692,17 @@ export default function AdminNurses() {
         .nurse-position {
           color: var(--gray-600);
           font-size: 0.875rem;
-          margin-bottom: 0.25rem;
+          margin-bottom: 0.5rem;
         }
 
-        .nurse-ward {
-          color: var(--primary);
-          font-weight: 500;
-          font-size: 0.875rem;
+        .nurse-badges {
+          display: flex;
+          gap: 0.5rem;
+        }
+
+        .badge-secondary {
+          background: var(--secondary);
+          color: white;
         }
 
         .nurse-details {
@@ -565,6 +730,7 @@ export default function AdminNurses() {
 
         .nurse-actions {
           display: flex;
+          flex-wrap: wrap;
           gap: 0.5rem;
         }
 
@@ -576,6 +742,13 @@ export default function AdminNurses() {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
           gap: 1rem;
+        }
+
+        .checkbox-group {
+          margin-top: 1.5rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
         }
 
         .form-input.error, .form-select.error {
@@ -617,6 +790,42 @@ export default function AdminNurses() {
           font-size: 0.875rem;
         }
 
+        .btn-warning {
+          background: var(--warning);
+          color: white;
+        }
+
+        .btn-warning:hover {
+          background: #d97706;
+        }
+
+        .transfer-info {
+          margin-bottom: 1.5rem;
+        }
+
+        .transfer-info p {
+          margin-bottom: 0.5rem;
+          color: var(--gray-700);
+        }
+
+        .warning-box {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 1rem;
+          background: #fef3c7;
+          border: 1px solid #fbbf24;
+          border-radius: var(--radius);
+          color: #92400e;
+          margin-top: 1rem;
+        }
+
+        .warning-box svg {
+          width: 24px;
+          height: 24px;
+          flex-shrink: 0;
+        }
+
         @media (max-width: 768px) {
           .page-header {
             flex-direction: column;
@@ -630,6 +839,14 @@ export default function AdminNurses() {
 
           .form-grid {
             grid-template-columns: 1fr;
+          }
+
+          .nurse-actions {
+            flex-direction: column;
+          }
+
+          .nurse-actions .btn {
+            width: 100%;
           }
         }
       `}</style>

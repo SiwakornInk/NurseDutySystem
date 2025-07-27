@@ -1,19 +1,19 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../components/Layout';
-import { auth, db, WARDS } from '../../lib/firebase';
-import { collection, query, getDocs, doc, getDoc, deleteDoc, orderBy } from 'firebase/firestore';
+import { auth, db } from '../../lib/firebase';
+import { collection, query, getDocs, doc, getDoc, deleteDoc, orderBy, where } from 'firebase/firestore';
 import Head from 'next/head';
 
 export default function AdminSchedules() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
   const [schedules, setSchedules] = useState([]);
-  const [selectedWard, setSelectedWard] = useState('all');
 
   useEffect(() => {
     checkAdminAndFetch();
-  }, [selectedWard]);
+  }, []);
 
   const checkAdminAndFetch = async () => {
     if (!auth.currentUser) {
@@ -23,31 +23,33 @@ export default function AdminSchedules() {
 
     try {
       const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-      if (!userDoc.exists() || userDoc.data().role !== 'admin') {
+      if (!userDoc.exists() || !userDoc.data().isAdmin) {
         router.push('/dashboard');
         return;
       }
-      fetchSchedules();
+      const userData = userDoc.data();
+      setCurrentUser(userData);
+      fetchSchedules(userData.currentWard);
     } catch (error) {
       console.error('Error:', error);
       router.push('/login');
     }
   };
 
-  const fetchSchedules = async () => {
+  const fetchSchedules = async (ward) => {
     setLoading(true);
     try {
-      let schedulesQuery = collection(db, 'schedules');
-      const snapshot = await getDocs(query(schedulesQuery, orderBy('createdAt', 'desc')));
+      const schedulesQuery = query(
+        collection(db, 'schedules'),
+        where('wardId', '==', ward),
+        orderBy('createdAt', 'desc')
+      );
       
-      let schedulesList = snapshot.docs.map(doc => ({
+      const snapshot = await getDocs(schedulesQuery);
+      const schedulesList = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
-
-      if (selectedWard !== 'all') {
-        schedulesList = schedulesList.filter(schedule => schedule.wardId === selectedWard);
-      }
 
       setSchedules(schedulesList);
     } catch (error) {
@@ -62,8 +64,26 @@ export default function AdminSchedules() {
     
     try {
       await deleteDoc(doc(db, 'schedules', scheduleId));
+      
+      // ปลดล็อค Soft Requests ของเดือนนั้น
+      const schedule = schedules.find(s => s.id === scheduleId);
+      if (schedule) {
+        const requestsQuery = query(
+          collection(db, 'monthlyRequests'),
+          where('wardId', '==', currentUser.currentWard),
+          where('month', '==', schedule.month)
+        );
+        
+        const requestsSnapshot = await getDocs(requestsQuery);
+        const updatePromises = requestsSnapshot.docs.map(doc => 
+          updateDoc(doc.ref, { isLocked: false })
+        );
+        
+        await Promise.all(updatePromises);
+      }
+      
       alert('ลบตารางเวรสำเร็จ');
-      fetchSchedules();
+      fetchSchedules(currentUser.currentWard);
     } catch (error) {
       console.error('Error:', error);
       alert('ไม่สามารถลบตารางเวรได้');
@@ -92,7 +112,7 @@ export default function AdminSchedules() {
 
       <div className="schedules-management">
         <div className="page-header">
-          <h1>ตารางเวรทั้งหมด</h1>
+          <h1>ตารางเวร{currentUser?.currentWard}</h1>
           <button
             className="btn btn-primary"
             onClick={() => router.push('/admin/schedule/create')}
@@ -101,22 +121,8 @@ export default function AdminSchedules() {
               <line x1="12" y1="5" x2="12" y2="19"/>
               <line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
-            สร้างตารางเวรใหม่
+            สร้างตารางเวร
           </button>
-        </div>
-
-        <div className="filters card">
-          <label>กรองตามวอร์ด:</label>
-          <select
-            className="form-select"
-            value={selectedWard}
-            onChange={(e) => setSelectedWard(e.target.value)}
-          >
-            <option value="all">ทั้งหมด</option>
-            {WARDS.map(ward => (
-              <option key={ward} value={ward}>{ward}</option>
-            ))}
-          </select>
         </div>
 
         <div className="schedules-grid">
@@ -216,24 +222,6 @@ export default function AdminSchedules() {
         .page-header h1 {
           font-size: 1.75rem;
           color: var(--gray-800);
-        }
-
-        .filters {
-          display: flex;
-          align-items: center;
-          gap: 1rem;
-          padding: 1.5rem;
-          margin-bottom: 2rem;
-        }
-
-        .filters label {
-          font-weight: 500;
-          color: var(--gray-700);
-        }
-
-        .filters .form-select {
-          width: auto;
-          min-width: 200px;
         }
 
         .schedules-grid {

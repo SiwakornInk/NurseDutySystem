@@ -2,25 +2,25 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../components/Layout';
 import { auth, db } from '../../lib/firebase';
-import { collection, query, where, getDocs, doc, getDoc, updateDoc, orderBy } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, orderBy } from 'firebase/firestore';
 import Head from 'next/head';
 
 export default function AdminRequests() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('soft');
+  const [currentUser, setCurrentUser] = useState(null);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
-  const [requests, setRequests] = useState({ soft: [], hard: [] });
+  const [requests, setRequests] = useState([]);
 
   useEffect(() => {
     checkAdminAuth();
   }, []);
 
   useEffect(() => {
-    if (auth.currentUser) {
+    if (currentUser) {
       fetchRequests();
     }
-  }, [activeTab, selectedMonth]);
+  }, [selectedMonth, currentUser]);
 
   const checkAdminAuth = async () => {
     if (!auth.currentUser) {
@@ -30,10 +30,11 @@ export default function AdminRequests() {
 
     try {
       const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-      if (!userDoc.exists() || userDoc.data().role !== 'admin') {
+      if (!userDoc.exists() || !userDoc.data().isAdmin) {
         router.push('/dashboard');
         return;
       }
+      setCurrentUser(userDoc.data());
     } catch (error) {
       console.error('Error:', error);
       router.push('/login');
@@ -41,99 +42,40 @@ export default function AdminRequests() {
   };
 
   const fetchRequests = async () => {
+    if (!currentUser) return;
+    
     setLoading(true);
     try {
-      if (activeTab === 'soft') {
-        const softQuery = query(
-          collection(db, 'monthlyRequests'),
-          where('month', '==', selectedMonth),
-          orderBy('createdAt', 'desc')
-        );
-        const snapshot = await getDocs(softQuery);
-        
-        const softRequests = await Promise.all(
-          snapshot.docs.map(async (docSnap) => {
-            const data = docSnap.data();
-            const userDoc = await getDoc(doc(db, 'users', data.userId));
-            const userData = userDoc.exists() ? userDoc.data() : {};
-            
-            return {
-              id: docSnap.id,
-              ...data,
-              userName: `${userData.prefix || ''} ${userData.firstName || ''} ${userData.lastName || ''}`,
-              ward: userData.currentWard || ''
-            };
-          })
-        );
-        
-        setRequests(prev => ({ ...prev, soft: softRequests }));
-      } else {
-        const hardQuery = query(
-          collection(db, 'hardRequests'),
-          where('status', '==', 'pending'),
-          orderBy('date', 'asc')
-        );
-        const snapshot = await getDocs(hardQuery);
-        
-        const hardRequests = await Promise.all(
-          snapshot.docs.map(async (docSnap) => {
-            const data = docSnap.data();
-            const userDoc = await getDoc(doc(db, 'users', data.userId));
-            const userData = userDoc.exists() ? userDoc.data() : {};
-            
-            return {
-              id: docSnap.id,
-              ...data,
-              userName: `${userData.prefix || ''} ${userData.firstName || ''} ${userData.lastName || ''}`,
-              ward: userData.currentWard || ''
-            };
-          })
-        );
-        
-        setRequests(prev => ({ ...prev, hard: hardRequests }));
-      }
+      // ดึง Soft Requests ของวอร์ดตัวเอง
+      const requestsQuery = query(
+        collection(db, 'monthlyRequests'),
+        where('wardId', '==', currentUser.currentWard),
+        where('month', '==', selectedMonth),
+        orderBy('updatedAt', 'desc')
+      );
+      
+      const snapshot = await getDocs(requestsQuery);
+      
+      const requestsList = await Promise.all(
+        snapshot.docs.map(async (docSnap) => {
+          const data = docSnap.data();
+          const userDoc = await getDoc(doc(db, 'users', data.userId));
+          const userData = userDoc.exists() ? userDoc.data() : {};
+          
+          return {
+            id: docSnap.id,
+            ...data,
+            userName: `${userData.prefix || ''} ${userData.firstName || ''} ${userData.lastName || ''}`,
+            position: userData.position || 'พยาบาล'
+          };
+        })
+      );
+      
+      setRequests(requestsList);
     } catch (error) {
       console.error('Error fetching requests:', error);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleApprove = async (requestId, type) => {
-    try {
-      const collection = type === 'soft' ? 'monthlyRequests' : 'hardRequests';
-      await updateDoc(doc(db, collection, requestId), {
-        status: 'approved',
-        approvedAt: new Date(),
-        approvedBy: auth.currentUser.uid
-      });
-      
-      alert('อนุมัติคำขอสำเร็จ');
-      fetchRequests();
-    } catch (error) {
-      console.error('Error approving request:', error);
-      alert('ไม่สามารถอนุมัติคำขอได้');
-    }
-  };
-
-  const handleReject = async (requestId, type) => {
-    const reason = prompt('กรุณาระบุเหตุผลที่ปฏิเสธ:');
-    if (!reason) return;
-    
-    try {
-      const collection = type === 'soft' ? 'monthlyRequests' : 'hardRequests';
-      await updateDoc(doc(db, collection, requestId), {
-        status: 'rejected',
-        rejectedAt: new Date(),
-        rejectedBy: auth.currentUser.uid,
-        rejectReason: reason
-      });
-      
-      alert('ปฏิเสธคำขอสำเร็จ');
-      fetchRequests();
-    } catch (error) {
-      console.error('Error rejecting request:', error);
-      alert('ไม่สามารถปฏิเสธคำขอได้');
     }
   };
 
@@ -143,6 +85,7 @@ export default function AdminRequests() {
     'no_morning_shifts': 'ไม่ขึ้นเวรเช้า',
     'no_afternoon_shifts': 'ไม่ขึ้นเวรบ่าย',
     'no_night_shifts': 'ไม่ขึ้นเวรดึก',
+    'no_night_afternoon_double': 'ไม่ขึ้นเวรดึก-บ่าย',
     'no_sundays': 'ไม่ขึ้นเวรวันอาทิตย์',
     'no_mondays': 'ไม่ขึ้นเวรวันจันทร์',
     'no_tuesdays': 'ไม่ขึ้นเวรวันอังคาร',
@@ -165,147 +108,104 @@ export default function AdminRequests() {
   return (
     <Layout>
       <Head>
-        <title>อนุมัติคำขอ - ระบบจัดตารางเวรพยาบาล</title>
+        <title>ดูคำขอของพยาบาล - ระบบจัดตารางเวรพยาบาล</title>
       </Head>
 
       <div className="admin-requests">
         <div className="page-header">
-          <h1>จัดการคำขอต่างๆ</h1>
+          <h1>คำขอของพยาบาล - {currentUser?.currentWard}</h1>
+          <p className="subtitle">ดูคำขอ Soft Request ของพยาบาลในวอร์ด</p>
         </div>
 
-        <div className="tabs-container">
-          <button
-            className={`tab-btn ${activeTab === 'soft' ? 'active' : ''}`}
-            onClick={() => setActiveTab('soft')}
-          >
-            Soft Requests ({requests.soft.filter(r => r.status === 'pending').length})
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'hard' ? 'active' : ''}`}
-            onClick={() => setActiveTab('hard')}
-          >
-            Hard Requests ({requests.hard.length})
-          </button>
+        <div className="section-controls card">
+          <label>เดือน:</label>
+          <input
+            type="month"
+            className="form-input"
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(e.target.value)}
+          />
+          <div className="requests-count">
+            <span className="badge badge-primary">
+              {requests.length} คำขอ
+            </span>
+            {requests.filter(r => r.isLocked).length > 0 && (
+              <span className="badge badge-secondary">
+                {requests.filter(r => r.isLocked).length} ล็อคแล้ว
+              </span>
+            )}
+          </div>
         </div>
 
-        {activeTab === 'soft' && (
-          <div className="soft-section">
-            <div className="section-controls card">
-              <label>เดือน:</label>
-              <input
-                type="month"
-                className="form-input"
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-              />
+        <div className="requests-grid">
+          {requests.length === 0 ? (
+            <div className="empty-state card">
+              <div className="empty-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 11H3v9h6m0-9v9m0-9h6m-6 0V2h6v9m0 0v9h6v-9m-6 0h6"/>
+                </svg>
+              </div>
+              <p>ยังไม่มีคำขอสำหรับเดือนนี้</p>
             </div>
-
-            <div className="requests-list">
-              {requests.soft.filter(r => r.status === 'pending').length === 0 ? (
-                <div className="empty-state card">
-                  <p>ไม่มีคำขอที่รอการอนุมัติ</p>
+          ) : (
+            requests.map((request) => (
+              <div key={request.id} className="request-card card animate-fadeIn">
+                <div className="request-header">
+                  <div className="request-info">
+                    <h3>{request.userName}</h3>
+                    <p className="position">{request.position}</p>
+                  </div>
+                  {request.isLocked && (
+                    <span className="badge badge-secondary">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="5" y="11" width="14" height="10" rx="2" ry="2"/>
+                        <path d="M7 11V7a5 5 0 0110 0v4"/>
+                      </svg>
+                      ล็อคแล้ว
+                    </span>
+                  )}
                 </div>
-              ) : (
-                requests.soft.filter(r => r.status === 'pending').map((request) => (
-                  <div key={request.id} className="request-card card animate-fadeIn">
-                    <div className="request-header">
-                      <div className="request-info">
-                        <h3>{request.userName}</h3>
-                        <p className="ward">{request.ward}</p>
-                      </div>
-                      {request.isHighPriority && (
-                        <span className="badge badge-warning">สำคัญมาก</span>
-                      )}
-                    </div>
 
-                    <div className="request-body">
-                      <div className="request-detail">
-                        <strong>ประเภท:</strong> {requestTypeLabels[request.type] || request.type}
-                      </div>
-                      {request.value && (
-                        <div className="request-detail">
-                          <strong>รายละเอียด:</strong> {request.value}
+                <div className="request-body">
+                  {request.requests && request.requests.length > 0 ? (
+                    <div className="request-list">
+                      {request.requests.map((req, idx) => (
+                        <div key={idx} className="request-item">
+                          <div className="request-type">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <polyline points="9 11 12 14 22 4"/>
+                              <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                            </svg>
+                            {requestTypeLabels[req.type] || req.type}
+                          </div>
+                          {req.value && (
+                            <div className="request-value">{req.value}</div>
+                          )}
+                          {req.isHighPriority && (
+                            <span className="badge badge-warning">สำคัญมาก</span>
+                          )}
                         </div>
-                      )}
-                      <div className="request-detail">
-                        <strong>วันที่ส่งคำขอ:</strong> {request.createdAt?.toDate?.().toLocaleDateString('th-TH') || 'N/A'}
-                      </div>
+                      ))}
                     </div>
-
-                    <div className="request-actions">
-                      <button
-                        className="btn btn-success"
-                        onClick={() => handleApprove(request.id, 'soft')}
-                      >
-                        อนุมัติ
-                      </button>
-                      <button
-                        className="btn btn-danger"
-                        onClick={() => handleReject(request.id, 'soft')}
-                      >
-                        ปฏิเสธ
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'hard' && (
-          <div className="hard-section">
-            <div className="requests-list">
-              {requests.hard.length === 0 ? (
-                <div className="empty-state card">
-                  <p>ไม่มีคำขอวันหยุดที่รอการอนุมัติ</p>
+                  ) : (
+                    <p className="no-requests">ไม่มีคำขอ</p>
+                  )}
                 </div>
-              ) : (
-                requests.hard.map((request) => (
-                  <div key={request.id} className="request-card card animate-fadeIn">
-                    <div className="request-header">
-                      <div className="request-info">
-                        <h3>{request.userName}</h3>
-                        <p className="ward">{request.ward}</p>
-                      </div>
-                      <div className="request-date">
-                        <span className="date-label">ขอหยุดวันที่</span>
-                        <span className="date-value">
-                          {new Date(request.date).toLocaleDateString('th-TH', {
-                            year: 'numeric',
-                            month: 'long',
-                            day: 'numeric',
-                            weekday: 'long'
-                          })}
-                        </span>
-                      </div>
-                    </div>
 
-                    <div className="request-actions">
-                      <button
-                        className="btn btn-success"
-                        onClick={() => handleApprove(request.id, 'hard')}
-                      >
-                        อนุมัติ
-                      </button>
-                      <button
-                        className="btn btn-danger"
-                        onClick={() => handleReject(request.id, 'hard')}
-                      >
-                        ปฏิเสธ
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
+                <div className="request-footer">
+                  <span className="update-time">
+                    อัพเดทล่าสุด: {request.updatedAt?.toDate?.().toLocaleDateString('th-TH') || 'N/A'}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <style jsx>{`
         .admin-requests {
-          max-width: 1000px;
+          max-width: 1200px;
           margin: 0 auto;
         }
 
@@ -316,35 +216,18 @@ export default function AdminRequests() {
           min-height: 400px;
         }
 
+        .page-header {
+          margin-bottom: 2rem;
+        }
+
         .page-header h1 {
           font-size: 1.75rem;
           color: var(--gray-800);
-          margin-bottom: 2rem;
+          margin-bottom: 0.5rem;
         }
 
-        .tabs-container {
-          display: flex;
-          gap: 1rem;
-          margin-bottom: 2rem;
-        }
-
-        .tab-btn {
-          flex: 1;
-          padding: 1rem;
-          border: 2px solid var(--gray-200);
-          background: var(--white);
-          border-radius: var(--radius);
-          cursor: pointer;
-          transition: var(--transition);
-          font-size: 1rem;
-          font-weight: 500;
+        .subtitle {
           color: var(--gray-600);
-        }
-
-        .tab-btn.active {
-          border-color: var(--primary);
-          background: var(--primary);
-          color: var(--white);
         }
 
         .section-controls {
@@ -364,10 +247,16 @@ export default function AdminRequests() {
           width: auto;
         }
 
-        .requests-list {
+        .requests-count {
+          margin-left: auto;
           display: flex;
-          flex-direction: column;
-          gap: 1rem;
+          gap: 0.5rem;
+        }
+
+        .requests-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+          gap: 1.5rem;
         }
 
         .request-card {
@@ -393,26 +282,22 @@ export default function AdminRequests() {
           margin-bottom: 0.25rem;
         }
 
-        .request-info .ward {
-          color: var(--primary);
-          font-weight: 500;
-        }
-
-        .request-date {
-          text-align: right;
-        }
-
-        .date-label {
-          display: block;
-          font-size: 0.875rem;
+        .request-info .position {
           color: var(--gray-600);
-          margin-bottom: 0.25rem;
+          font-size: 0.875rem;
         }
 
-        .date-value {
-          display: block;
-          font-weight: 600;
-          color: var(--gray-800);
+        .badge-secondary {
+          background: var(--secondary);
+          color: white;
+          display: flex;
+          align-items: center;
+          gap: 0.25rem;
+        }
+
+        .badge-secondary svg {
+          width: 14px;
+          height: 14px;
         }
 
         .request-body {
@@ -422,53 +307,93 @@ export default function AdminRequests() {
           margin-bottom: 1rem;
         }
 
-        .request-detail {
-          margin-bottom: 0.5rem;
-          font-size: 0.875rem;
-          color: var(--gray-700);
-        }
-
-        .request-detail:last-child {
-          margin-bottom: 0;
-        }
-
-        .request-detail strong {
-          color: var(--gray-800);
-          margin-right: 0.5rem;
-        }
-
-        .request-actions {
+        .request-list {
           display: flex;
-          gap: 0.5rem;
-          justify-content: flex-end;
+          flex-direction: column;
+          gap: 0.75rem;
         }
 
-        .empty-state {
+        .request-item {
+          display: flex;
+          flex-direction: column;
+          gap: 0.25rem;
+        }
+
+        .request-type {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          font-weight: 500;
+          color: var(--gray-800);
+        }
+
+        .request-type svg {
+          width: 16px;
+          height: 16px;
+          color: var(--success);
+        }
+
+        .request-value {
+          margin-left: 1.5rem;
+          font-size: 0.875rem;
+          color: var(--gray-600);
+        }
+
+        .no-requests {
           text-align: center;
-          padding: 3rem;
           color: var(--gray-500);
         }
 
+        .request-footer {
+          display: flex;
+          justify-content: flex-end;
+        }
+
+        .update-time {
+          font-size: 0.75rem;
+          color: var(--gray-500);
+        }
+
+        .empty-state {
+          grid-column: 1 / -1;
+          text-align: center;
+          padding: 3rem;
+        }
+
+        .empty-icon {
+          width: 80px;
+          height: 80px;
+          margin: 0 auto 1.5rem;
+          background: var(--gray-100);
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--gray-400);
+        }
+
+        .empty-icon svg {
+          width: 40px;
+          height: 40px;
+        }
+
+        .empty-state p {
+          color: var(--gray-600);
+        }
+
         @media (max-width: 768px) {
-          .tabs-container {
+          .section-controls {
             flex-direction: column;
+            align-items: stretch;
           }
 
-          .request-header {
-            flex-direction: column;
-            gap: 1rem;
+          .requests-count {
+            margin-left: 0;
+            margin-top: 0.5rem;
           }
 
-          .request-date {
-            text-align: left;
-          }
-
-          .request-actions {
-            justify-content: stretch;
-          }
-
-          .request-actions .btn {
-            flex: 1;
+          .requests-grid {
+            grid-template-columns: 1fr;
           }
         }
       `}</style>
