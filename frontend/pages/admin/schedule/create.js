@@ -2,14 +2,14 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../../components/Layout';
 import { auth, db, WARDS, SHIFT_NAMES } from '../../../lib/firebase';
-import { collection, query, where, getDocs, doc, getDoc, addDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, addDoc, updateDoc } from 'firebase/firestore';
 import axios from 'axios';
 import Head from 'next/head';
 
 export default function CreateSchedule() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
-  const [selectedWard, setSelectedWard] = useState('');
+  const [user, setUser] = useState(null);
   const [selectedMonth, setSelectedMonth] = useState('');
   const [nurses, setNurses] = useState([]);
   const [requests, setRequests] = useState({ soft: {}, hard: [] });
@@ -39,21 +39,29 @@ export default function CreateSchedule() {
         router.push('/dashboard');
         return;
       }
+      setUser(userDoc.data());
     } catch (error) {
       console.error('Error:', error);
       router.push('/login');
     }
   };
 
+  useEffect(() => {
+    if (user && selectedMonth) {
+      fetchWardData();
+    }
+  }, [user, selectedMonth]);
+
   const fetchWardData = async () => {
-    if (!selectedWard || !selectedMonth) return;
+    if (!user || !selectedMonth) return;
     
     setLoading(true);
     try {
+      const wardId = user.currentWard;
+      
       const nursesQuery = query(
         collection(db, 'users'),
-        where('role', '==', 'nurse'),
-        where('currentWard', '==', selectedWard)
+        where('currentWard', '==', wardId)
       );
       const nursesSnapshot = await getDocs(nursesQuery);
       const nursesList = nursesSnapshot.docs.map(doc => ({
@@ -104,15 +112,9 @@ export default function CreateSchedule() {
     }
   };
 
-  useEffect(() => {
-    if (selectedWard && selectedMonth) {
-      fetchWardData();
-    }
-  }, [selectedWard, selectedMonth]);
-
   const handleGenerateSchedule = async () => {
-    if (!selectedWard || !selectedMonth || nurses.length === 0) {
-      alert('กรุณาเลือกวอร์ดและเดือนที่ต้องการสร้างตาราง');
+    if (!user || !selectedMonth || nurses.length === 0) {
+      alert('ข้อมูลไม่ครบถ้วน');
       return;
     }
 
@@ -123,7 +125,7 @@ export default function CreateSchedule() {
       const endDate = `${year}-${month}-${new Date(parseInt(year), parseInt(month), 0).getDate()}`;
 
       const payload = {
-        wardId: selectedWard,
+        wardId: user.currentWard,
         nurses: nurses.map(n => ({
           id: n.id,
           firstName: n.firstName,
@@ -168,6 +170,8 @@ export default function CreateSchedule() {
     try {
       await addDoc(collection(db, 'schedules'), {
         ...generatedSchedule,
+        wardId: user.currentWard,
+        month: selectedMonth,
         createdAt: new Date(),
         createdBy: auth.currentUser.uid,
         nurseIds: nurses.map(n => n.id)
@@ -199,7 +203,7 @@ export default function CreateSchedule() {
 
     return (
       <div className="schedule-preview">
-        <h3>ตารางเวรที่สร้าง - {selectedWard}</h3>
+        <h3>ตารางเวรที่สร้าง - {user?.currentWard}</h3>
         <div className="table-container">
           <table className="schedule-table">
             <thead>
@@ -277,7 +281,7 @@ export default function CreateSchedule() {
 
       <div className="create-schedule">
         <div className="page-header">
-          <h1>สร้างตารางเวร</h1>
+          <h1>สร้างตารางเวร{user?.currentWard ? ` - ${user.currentWard}` : ''}</h1>
         </div>
 
         {!generatedSchedule ? (
@@ -285,23 +289,13 @@ export default function CreateSchedule() {
             <div className="schedule-form card animate-slideUp">
               <h2>ข้อมูลการสร้างตาราง</h2>
               
-              <div className="form-grid">
-                <div className="form-group">
-                  <label className="form-label">เลือกวอร์ด</label>
-                  <select
-                    className="form-select"
-                    value={selectedWard}
-                    onChange={(e) => setSelectedWard(e.target.value)}
-                  >
-                    <option value="">-- เลือกวอร์ด --</option>
-                    {WARDS.map(ward => (
-                      <option key={ward} value={ward}>{ward}</option>
-                    ))}
-                  </select>
+              <div className="form-info">
+                <div className="info-item">
+                  <label>วอร์ด:</label>
+                  <strong>{user?.currentWard || '-'}</strong>
                 </div>
-
-                <div className="form-group">
-                  <label className="form-label">เลือกเดือน</label>
+                <div className="info-item">
+                  <label>เลือกเดือน:</label>
                   <input
                     type="month"
                     className="form-input"
@@ -312,7 +306,7 @@ export default function CreateSchedule() {
                 </div>
               </div>
 
-              {selectedWard && nurses.length > 0 && (
+              {nurses.length > 0 && (
                 <div className="ward-info">
                   <p>จำนวนพยาบาลในวอร์ด: <strong>{nurses.length} คน</strong></p>
                   <p>พยาบาลข้าราชการ: <strong>{nurses.filter(n => n.isGovernmentOfficial).length} คน</strong></p>
@@ -320,7 +314,7 @@ export default function CreateSchedule() {
               )}
             </div>
 
-            {selectedWard && nurses.length > 0 && (
+            {nurses.length > 0 && (
               <>
                 <div className="schedule-params card animate-fadeIn">
                   <h2>ตั้งค่าการสร้างตาราง</h2>
@@ -497,7 +491,7 @@ export default function CreateSchedule() {
                 <div className="summary-content">
                   <div className="summary-item">
                     <span>วอร์ด:</span>
-                    <strong>{selectedWard}</strong>
+                    <strong>{user?.currentWard}</strong>
                   </div>
                   <div className="summary-item">
                     <span>เดือน:</span>
@@ -560,6 +554,29 @@ export default function CreateSchedule() {
           font-size: 1.25rem;
           color: var(--gray-800);
           margin-bottom: 1.5rem;
+        }
+
+        .form-info {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+          gap: 1rem;
+          margin-bottom: 1.5rem;
+        }
+
+        .info-item {
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+        }
+
+        .info-item label {
+          font-size: 0.875rem;
+          color: var(--gray-600);
+        }
+
+        .info-item strong {
+          font-size: 1.125rem;
+          color: var(--primary);
         }
 
         .form-grid {
