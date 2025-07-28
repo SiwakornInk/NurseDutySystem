@@ -458,18 +458,22 @@ export default function Profile() {
         .profile-details h1 {
           font-size: 1.75rem;
           margin-bottom: 0.25rem;
-          color: var(--gray-800);
+          color: var(--white);
+          text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+          font-weight: 700;
         }
 
         .profile-details .position {
           font-size: 1.125rem;
-          color: var(--gray-600);
+          color: rgba(255, 255, 255, 0.9);
           margin-bottom: 0.25rem;
+          text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
         }
 
         .profile-details .ward {
-          color: var(--primary);
+          color: rgba(255, 255, 255, 0.8);
           font-weight: 500;
+          text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
         }
 
         .message {

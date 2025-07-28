@@ -277,7 +277,7 @@ export default function AdminProfile() {
         )}
 
         <div className="profile-content">
-          <div className="admin-stats card animate-fadeIn">
+          {/* <div className="admin-stats card animate-fadeIn">
             <h2>สถิติการดูแลระบบ</h2>
             <div className="stats-grid">
               <div className="stat-item">
@@ -338,7 +338,7 @@ export default function AdminProfile() {
                 </div>
               </div>
             </div>
-          </div>
+          </div> */}
 
           <div className="info-section card animate-fadeIn">
             <div className="section-header">
@@ -621,13 +621,16 @@ export default function AdminProfile() {
         .profile-details h1 {
           font-size: 1.75rem;
           margin-bottom: 0.25rem;
-          color: var(--gray-800);
+          color: var(--white);
+          text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+          font-weight: 700;
         }
 
         .profile-details .position {
           font-size: 1.125rem;
-          color: var(--gray-600);
+          color: rgba(255, 255, 255, 0.9);
           margin-bottom: 0.5rem;
+          text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
         }
 
         .profile-badges {
