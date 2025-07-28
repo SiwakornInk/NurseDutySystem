@@ -47,6 +47,7 @@ export default function Layout({ children }) {
     { href: '/admin/schedule/create', icon: 'plus', label: 'สร้างตารางเวร' },
     { href: '/admin/requests', icon: 'inbox', label: 'อนุมัติคำขอ' },
     { href: '/admin/swaps', icon: 'swap', label: 'จัดการการแลกเวร' },
+    { href: '/admin/profile', icon: 'user', label: 'โปรไฟล์' }
   ] : [
     { href: '/dashboard', icon: 'home', label: 'หน้าแรก' },
     { href: '/my-schedule', icon: 'calendar', label: 'ตารางเวรของฉัน' },
